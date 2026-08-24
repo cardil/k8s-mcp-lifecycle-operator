@@ -22,6 +22,7 @@ package controller
 import (
 	"context"
 	"net/http"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -830,7 +831,7 @@ var _ = Describe("MCPServer Controller", func() {
 		})
 
 		It("should not use a timed requeue when Deployment is unavailable", func() {
-			controllerReconciler := newReconcilerForTest(k8sClient, k8sClient.Scheme())
+			controllerReconciler, fr := newReconcilerForTestWithFakeEvents(k8sClient, k8sClient.Scheme())
 
 			By("Initial reconciliation creates deployment")
 			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
@@ -857,7 +858,7 @@ var _ = Describe("MCPServer Controller", func() {
 			}
 			Expect(k8sClient.Status().Update(ctx, deployment)).To(Succeed())
 
-			By("Reconciling should set Ready=False without a timed requeue")
+			By("Reconciling should set Ready=False, omit address, emit Warning, and not requeue")
 			result, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: typeNamespacedName,
 			})
@@ -875,6 +876,20 @@ var _ = Describe("MCPServer Controller", func() {
 			By("Verifying Replicas and ReadyReplicas reflect deployment state")
 			Expect(mcpServer.Status.Replicas).To(Equal(int32(1)))
 			Expect(mcpServer.Status.ReadyReplicas).To(Equal(int32(0)))
+			Expect(mcpServer.Status.Address).To(BeNil())
+
+			var deploymentUnavailableEvent string
+			Eventually(func(g Gomega) {
+				for _, ev := range drainEvents(fr.Events) {
+					if strings.Contains(ev, corev1.EventTypeWarning) &&
+						strings.Contains(ev, ReasonDeploymentUnavailable) {
+						deploymentUnavailableEvent = ev
+						break
+					}
+				}
+				g.Expect(deploymentUnavailableEvent).NotTo(BeEmpty())
+				g.Expect(deploymentUnavailableEvent).To(ContainSubstring("Waiting for instances to become healthy"))
+			}).Should(Succeed())
 		})
 
 		It("should NOT requeue when Deployment becomes available", func() {
