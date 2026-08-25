@@ -66,6 +66,9 @@ func main() {
 	var probeAddr string
 	var secureMetrics bool
 	var enableHTTP2 bool
+	var loggingConfigMapName string
+	var loggingConfigMapNamespace string
+	var loggingConfigMapKey string
 	var enableWebhook bool
 	var imageAllowlist string
 	var requireImageDigest bool
@@ -89,6 +92,12 @@ func main() {
 	flag.StringVar(&metricsCertKey, "metrics-cert-key", "tls.key", "The name of the metrics server key file.")
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
+	flag.StringVar(&loggingConfigMapName, "logging-configmap-name", defaultLoggingConfigMapName,
+		"Name of the ConfigMap to watch for runtime log level changes. Set to empty to disable.")
+	flag.StringVar(&loggingConfigMapNamespace, "logging-configmap-namespace", "",
+		"Namespace of the logging ConfigMap. Defaults to the operator pod namespace.")
+	flag.StringVar(&loggingConfigMapKey, "logging-configmap-key", defaultLoggingConfigMapKey,
+		"Key in the logging ConfigMap that holds the log level.")
 	flag.BoolVar(&enableWebhook, "enable-webhook", false,
 		"If set, the validating admission webhook for MCPServer is registered. "+
 			"Requires TLS certificates to be available (e.g. via cert-manager).")
@@ -108,6 +117,8 @@ func main() {
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
 
+	atomicLevel := extractAtomicLevel(&opts)
+	opts.Level = &atomicLevel
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 
 	// if the enable-http2 flag is false (the default), http/2 should be disabled
@@ -244,6 +255,12 @@ func main() {
 	}
 	if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
 		setupLog.Error(err, "unable to set up ready check")
+		os.Exit(1)
+	}
+
+	loggingNamespace := resolveLoggingNamespace(loggingConfigMapNamespace)
+	if err := setupLogLevelFromConfigMap(mgr, atomicLevel, loggingNamespace, loggingConfigMapName, loggingConfigMapKey); err != nil {
+		setupLog.Error(err, "unable to set up runtime log level sync")
 		os.Exit(1)
 	}
 
